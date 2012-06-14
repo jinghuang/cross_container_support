@@ -23,12 +23,6 @@ CACHE="/var/cache/lxc/${DISTRO}"
 
 download_new_stage3(){
 
-	    RES=$?
-	    if [ "${RES}" != "0" ]; then
-		    echo "Cache repository is busy."
-		    break
-	    fi
-
 	    # check the mini distro was not already downloaded
         TEMPLATE="${CACHE}/${ARCH}_${SUBARCH}_rootfs"
 	    echo -n "Checking for pre-existing cache in ${TEMPLATE}... "
@@ -62,8 +56,7 @@ download_new_stage3(){
             echo "${STAGE3URL}-${LATEST_STAGE3_TIMESTAMP}.tar.bz2"
 		    ${WGET} -O ${CACHE}/stage3-${ARCH}-${LATEST_STAGE3_TIMESTAMP}.tar.bz2 "${STAGE3URL}-${LATEST_STAGE3_TIMESTAMP}.tar.bz2" 1>/dev/null 2>/dev/null
 
-	    	RESULT=$?
-	    	if [ "${RESULT}" != "0" ]; then
+	    	if [ "$?" != "0" ]; then
 		        echo "failed!"
 		        exit 1
 		    fi
@@ -203,12 +196,16 @@ create (){
     if [ ! -e "${ROOTFS}" ]; then
 	    mkdir -p /var/lock/subsys/
 	(
-    	flock -n -x 200
+    	flock -n -x 200	    
+        RES=$?
+	    if [ "${RES}" != "0" ]; then
+		    echo "Cache repository is busy."
+		    break
+	    fi
+
         download_new_stage3
 	) 200> "/var/lock/subsys/lxc"
     fi
-
-    exit 1
 
     write_lxc_configuration
 
@@ -223,8 +220,8 @@ create (){
     write_distro_init_fixes
 
     /usr/sbin/lxc-create -n ${NAME} -f ${CONFFILE} 1>/dev/null 2>/dev/null
-    RES=$?
 
+    RES=$?
     if [ "${RES}" != "0" ]; then
         echo "Failed to create '${NAME}'"
         exit 1
@@ -239,7 +236,6 @@ help (){
 }
 
 destroy() {
-
     /usr/sbin/lxc-stop -n ${NAME}
     /usr/sbin/lxc-destroy -n ${NAME}
     echo "destroy $NAME"
@@ -253,12 +249,12 @@ destroy() {
     umount ${ROOTFS}/proc
     umount ${ROOTFS}/dev
     umount ${ROOTFS}/sys
-    rm -f ${CONFFILE}
-
+    
     echo -n "Shall I remove the rootfs and configfile [y/n] ? "
     read
     if [ "${REPLY}" = "y" ]; then
-	rm -rf ${ROOTFS}
+	    rm -fr ${ROOTFS}
+        rm -fr ${CONFFILE}
     fi
 
     return 0
