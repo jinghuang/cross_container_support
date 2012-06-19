@@ -122,6 +122,17 @@ mount_required_dir(){
     echo "done."
 }
 
+emerge_qemu_user (){
+    echo -n "emerge qemu-user to ${ROOTFS}"
+    ROOT=${ROOTFS}/ emerge -K qemu-user
+    RES=$?
+    if [ "${RES}" != "0" ]; then
+        echo "Failed to emerge qemu-user to ${ROOTFS}"
+        exit 1
+    fi
+    echo "done."
+}
+
 write_distro_fstab() {
 cat <<EOF > ${ROOTFS}/${FSTAB}
 # required to prevent boot-time error display
@@ -186,6 +197,40 @@ create (){
         exit 1
     fi
 
+    if [ $ARCH != 'x86' ]; then
+        # check binfmt_misc module
+        if [ ! -d "/proc/sys/fs/binfmt_misc" ];then
+            modprobe binfmt_misc 
+            RES=$?
+            if [ "${RES}" != "0" ]; then
+                echo "Failed to load binfmt_misc module"
+                exit 1
+            fi
+        fi
+
+        if [ ! -f "/proc/sys/fs/binfmt_misc/register" ]; then
+            mount binfmt_misc -t binfmt_misc /proc/sys/fs/binfmt_misc
+            RES=$?
+            if [ "${RES}" != "0" ]; then
+                echo "Failed to mount binfmt_misc to /proc/sys/fs/binfmt_misc"
+                exit 1
+            fi
+        fi
+
+        if [ ! -f "/etc/init.d/qemu-binfmt" ]; then
+            echo "=app-emulation/qemu-user-1.0 ~x86" >> /etc/portage/package.keywords 
+            eselect python set python2.7
+            USE="static" emerge -b1 app-emulation/qemu-user
+            RES=$?
+            if [ "${RES}" != "0" ]; then
+                echo "Failed to emerge app-emulation/qemu-user"
+                exit 1
+            fi
+        fi
+
+        /etc/init.d/qemu-binfmt start
+    fi
+
     if [ $ARCH == 'arm' ]; then
         echo -n "What is the subarch of ${ARCH}? "
         read _SUBARCH_
@@ -196,7 +241,7 @@ create (){
     if [ ! -e "${ROOTFS}" ]; then
 	    mkdir -p /var/lock/subsys/
 	(
-    	flock -n -x 200	    
+    	flock -n -x 200 
         RES=$?
 	    if [ "${RES}" != "0" ]; then
 		    echo "Cache repository is busy."
@@ -212,6 +257,10 @@ create (){
     write_distro_inittab
 
     mount_required_dir
+
+    if [ $ARCH != 'x86' ]; then
+        emerge_qemu_user
+    fi
 
     write_distro_fstab
 
