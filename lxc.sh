@@ -95,13 +95,13 @@ lxc.network.flags = up
 lxc.network.link = br0
 # For now, lxc can't set default gateway,
 # so whole network config is set directly inside guest
-# lxc.network.ipv4 = 0.0.0.0
+lxc.network.ipv4 = ${IPV4}/24
 
 # root filesystem location
 lxc.rootfs = `readlink -f ${ROOTFS}`
 
 # console access
-lxc.tty = 1
+lxc.tty = 2
 
 # this part is based on 'linux capabilities', see: man 7 capabilities
 #  eg: you may also wish to drop 'cap_net_raw' (though it breaks ping)
@@ -116,9 +116,15 @@ mount_required_dir(){
     echo -n "mount required directories... "
     mkdir -p ${ROOTFS}/usr/portage
     mount --bind /usr/portage ${ROOTFS}/usr/portage
-    mount -t proc proc ${ROOTFS}/proc
-    mount -o bind /dev ${ROOTFS}/dev
+ 
+    mount --bind /proc ${ROOTFS}/proc
+
+    if [ $ARCH == 'x86' ]; then
+        mount -o bind /dev ${ROOTFS}/dev
+    fi
+
     mount --bind /sys ${ROOTFS}/sys
+
     echo "done."
 }
 
@@ -267,6 +273,10 @@ create (){
     write_distro_network
 
     write_distro_init_fixes
+
+    if [ $ARCH != 'x86' ];then
+        chroot ${ROOTFS}/ /bin/busybox mdev -s
+    fi
 
     /usr/sbin/lxc-create -n ${NAME} -f ${CONFFILE} 1>/dev/null 2>/dev/null
 
