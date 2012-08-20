@@ -34,7 +34,7 @@ lxc.sh start -n chroot_name
 4. Switch to native compiler
 cd /root
 source switch.sh native
-do-compile
+do-compile using armv7a-hardfloat-linux-gnueabi-gcc
 
 5. Back to emu env
 source switch.sh emu
