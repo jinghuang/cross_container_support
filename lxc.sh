@@ -20,6 +20,9 @@ FSTAB="/etc/fstab"
 CONFFILE="./lxc-conf"
 
 CACHE="/var/cache/lxc/${DISTRO}"
+CTARGET=''
+GCC_PATH=''
+LDPATH=''
 
 download_new_stage3(){
 
@@ -95,17 +98,17 @@ lxc.network.flags = up
 lxc.network.link = br0
 # For now, lxc can't set default gateway,
 # so whole network config is set directly inside guest
-lxc.network.ipv4 = ${IPV4}/24
+lxc.network.ipv4 = ${IPV4}
 
 # root filesystem location
 lxc.rootfs = `readlink -f ${ROOTFS}`
 
 # console access
-lxc.tty = 2
+lxc.tty = 1
 
 # this part is based on 'linux capabilities', see: man 7 capabilities
 #  eg: you may also wish to drop 'cap_net_raw' (though it breaks ping)
-lxc.cap.drop = sys_module mknod mac_override sys_boot
+# lxc.cap.drop = sys_module mknod mac_override sys_boot
 
 EOF
  echo "done."
@@ -187,6 +190,144 @@ write_distro_inittab() {
     sed -i 's/^(\s*keyword .*)$/$1 -lxc/' ${ROOTFS}/etc/init.d/termencoding
     # quiet login
     #touch ${ROOTFS}/root/.hushlogin
+}
+
+# Usage: source_var <var> <file> [default value]
+source_var() {
+	unset $1
+	local val=$(source "$2"; echo "${!1}")
+	: ${val:=$3}
+	eval $1=\"${val}\"
+}
+
+config_native_env() {
+    mkdir -p "${ROOTFS}/native/lib"
+    mount --bind "/lib" "${ROOTFS}/native/lib"
+    mkdir -p "${ROOTFS}/native/usr"
+    mount --bind "/usr" "${ROOTFS}/native/usr"
+
+    eval $(gcc-config -l | grep \* | grep $ARCH | awk -F- '
+    {
+        split($0, parts, " ")
+        print "PROFILE=" parts[2]
+    }')
+
+    if [ -z "${PROFILE}" ]; then
+	    echo "Cannot get native gcc profile"
+        exit 1
+    fi
+
+    source_var CTARGET "/etc/env.d/gcc/${PROFILE}"
+    source_var GCC_PATH "/etc/env.d/gcc/${PROFILE}"
+    source_var LDPATH "/etc/env.d/gcc/${PROFILE}"
+
+    LD_LIBRARY=`readlink /lib/ld-linux.so.2`
+    ln -s /native/lib/${LD_LIBRARY} ${ROOTFS}/lib/ld-linux.so.2
+
+    echo "export LD_LIBRARY_PATH=\"/native/lib:/native/usr/lib:/native/usr/local/lib\"" >> ${ROOTFS}/etc/bash/bashrc
+}
+
+config_switch_script() {
+cat <<EOF > ${ROOTFS}/root/switch.sh
+#!/bin/bash
+
+EMU_PATH="/etc/emu_path"
+
+switch_to_native(){
+    echo "PATH=\$PATH" >> \${EMU_PATH}
+    export PATH="/usr/libexec/gcc/${CTARGET}:/native/usr/local/sbin:/native/usr/local/bin:/native/usr/sbin:/native/usr/bin:${GCC_PATH}:\$PATH"
+    echo \$PATH
+
+    if [ -e "/usr/${CTARGET}" ] ; then
+        mv "/usr/${CTARGET}" "/usr/${CTARGET}-emu" 
+    fi
+    ln -s "/native/usr/${CTARGET}" "/usr/${CTARGET}"
+
+    if [ -e "/usr/libexec/gcc/${CTARGET}" ] ; then
+        mv "/usr/libexec/gcc/${CTARGET}" "/usr/libexec/gcc/${CTARGET}-emu" 
+    fi
+    ln -s "/native/usr/libexec/gcc/${CTARGET}" "/usr/libexec/gcc/${CTARGET}"
+
+    #replace binutils' LIBPATH
+    if [ -e "/usr/lib/binutils/${CTARGET}" ] ; then
+        mv "/usr/lib/binutils/${CTARGET}" "/usr/lib/binutils/${CTARGET}-emu" 
+    fi
+    ln -s "/native/usr/lib/binutils/${CTARGET}" "/usr/lib/binutils/${CTARGET}"
+
+    #replace sysroot
+    if [ -e "/usr/i686-pc-linux-gnu/${CTARGET}" ] ; then
+        mv "/usr/i686-pc-linux-gnu/${CTARGET}" "/usr/i686-pc-linux-gnu/${CTARGET}-emu" 
+    else
+        mkdir -p "/usr/i686-pc-linux-gnu"
+    fi
+    ln -s "/native/usr/i686-pc-linux-gnu/${CTARGET}" "/usr/i686-pc-linux-gnu/${CTARGET}"
+
+    #replace gcc LDPATH
+    if [ -e "${LDPATH}" ] ; then
+        echo "reuse some emulated libs"
+        touch "${LDPATH}/used"
+    else
+        if [ ! -e "/usr/lib/gcc/${CTARGET}" ]; then
+            mkdir -p "/usr/lib/gcc/${CTARGET}"
+        fi
+        ln -s "/native/.${LDPATH}" "${LDPATH}"
+    fi
+}
+
+switch_to_emu(){
+    #get old path
+    if [ -e "\${EMU_PATH}" ]; then
+        eval \$(cat \${EMU_PATH} | awk -F- '{print "path="\$0}')
+        export \$path
+        echo \$path
+    else
+        echo "PATH has never been changed!"
+    fi
+
+    if [ -e "/usr/${CTARGET}-emu" ] ; then
+        rm -fr "/usr/${CTARGET}"
+        mv "/usr/${CTARGET}-emu" "/usr/${CTARGET}" 
+    fi
+
+    if [ -e "/usr/libexec/gcc/${CTARGET}-emu" ] ; then
+        rm -fr "/usr/libexec/gcc/${CTARGET}"
+        mv "/usr/libexec/gcc/${CTARGET}-emu" "/usr/libexec/gcc/${CTARGET}" 
+    fi
+
+    if [ -e "/usr/lib/binutils/${CTARGET}-emu" ] ; then
+        rm -fr "/usr/lib/binutils/${CTARGET}"
+        mv "/usr/lib/binutils/${CTARGET}-emu" "/usr/lib/binutils/${CTARGET}" 
+    fi
+
+    if [ -e "/usr/i686-pc-linux-gnu" ] ; then
+        rm -fr "/usr/i686-pc-linux-gnu"
+    fi
+
+    if [ ! -e "${LDPATH}/used" ] ; then
+        rm -fr "${LDPATH}"
+    fi
+}
+
+help() {
+    echo "Usage: source switch.sh [native/emu]"
+    echo "Switch the compiler. Non't forget use source!"
+    echo ""
+    echo "native          Switch compiler to native"
+    echo "emu             Switch compiler to emu"
+}
+
+case "\$1" in
+    native)
+        switch_to_native;;
+    emu)
+        switch_to_emu;;
+    *)
+        help;;
+esac
+
+EOF
+echo "switch.sh done"
+
 }
 
 create (){
@@ -275,7 +416,9 @@ create (){
     write_distro_init_fixes
 
     if [ $ARCH != 'x86' ];then
-        chroot ${ROOTFS}/ /bin/busybox mdev -s
+    	(cd ${ROOTFS} ; chroot . /bin/busybox mdev -s)
+        config_native_env
+        config_switch_script
     fi
 
     /usr/sbin/lxc-create -n ${NAME} -f ${CONFFILE} 1>/dev/null 2>/dev/null
@@ -308,6 +451,9 @@ destroy() {
     umount ${ROOTFS}/proc
     umount ${ROOTFS}/dev
     umount ${ROOTFS}/sys
+
+    umount ${ROOTFS}/native/lib
+    umount ${ROOTFS}/native/usr
     
     echo -n "Shall I remove the rootfs and configfile [y/n] ? "
     read
@@ -320,10 +466,8 @@ destroy() {
 }
 
 start() {
-
     echo "start the ${NAME} lxc containter..."
     /usr/sbin/lxc-start -n ${NAME} -f ${CONFFILE}
-
 }
 
 # Note: assuming uid==0 is root -- might break with userns??
